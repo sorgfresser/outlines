@@ -6,3 +6,4 @@ from .fsm import fsm
 from .json_gen import json
 from .regex import regex
 from .text import text
+from .switches import switch_experts_top_k, switch_experts_top_p

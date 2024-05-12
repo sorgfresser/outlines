@@ -13,5 +13,6 @@ from .mamba import Mamba, mamba
 from .openai import OpenAI, azure_openai, openai
 from .transformers import Transformers, transformers
 from .vllm import VLLM, vllm
+from .mixtral import mixtral
 
 LogitsGenerator = Union[Transformers, LlamaCpp, ExLlamaV2Model, Mamba]

@@ -1,6 +1,6 @@
 import datetime
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Iterator, List, Optional, Union
+from typing import TYPE_CHECKING, Iterator, List, Optional, Union, Callable
 
 from outlines.generate.generator import sequence_generator
 from outlines.samplers import BeamSearchSampler, GreedySampler, MultinomialSampler
@@ -132,6 +132,7 @@ class SequenceGenerator:
         max_tokens: Optional[int] = None,
         stop_at: Optional[Union[str, List[str]]] = None,
         rng: Optional["torch.Generator"] = None,
+        switch_experts: Optional[Callable] = None
     ) -> Union[FormattedOutput, List[FormattedOutput], List[List[FormattedOutput]]]:
         """Generate the full text sequence.
 
@@ -200,6 +201,7 @@ class SequenceGenerator:
             attention_masks,
             fsm_states,
             rng=rng,
+            switch_experts=switch_experts
         )
 
         while True:
@@ -250,6 +252,7 @@ class SequenceGenerator:
         max_tokens: Optional[int] = None,
         stop_at: Optional[Union[str, List[str]]] = None,
         rng: Optional["torch.Generator"] = None,
+        switch_experts: Optional[Callable] = None
     ) -> Iterator[Union[List[str], str, List[List[str]]]]:
         """Generate the text sequence one token at a time.
 
@@ -320,6 +323,7 @@ class SequenceGenerator:
             attention_masks,
             fsm_states,
             rng=rng,
+            switch_experts=switch_experts
         )
 
         def token_generator() -> Iterator[Union[List[str], str, List[List[str]]]]:

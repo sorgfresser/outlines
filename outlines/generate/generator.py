@@ -1,6 +1,7 @@
 import dataclasses
 import math
 from typing import TYPE_CHECKING, Callable, Iterable, Iterator, List, Optional, Tuple
+import numpy as np
 
 if TYPE_CHECKING:
     import torch
@@ -22,14 +23,15 @@ class GenerationState:
 
 
 def sequence_generator(
-    model: Callable,
-    sampler: Callable,
-    fsms: List["Guide"],
-    token_ids: "torch.Tensor",
-    sequence_weights: "torch.Tensor",
-    attention_masks: "torch.Tensor",
-    fsm_states: List[int],
-    rng: "torch.Generator",
+        model: Callable,
+        sampler: Callable,
+        fsms: List["Guide"],
+        token_ids: "torch.Tensor",
+        sequence_weights: "torch.Tensor",
+        attention_masks: "torch.Tensor",
+        fsm_states: List[int],
+        rng: "torch.Generator",
+        switch_experts: Optional[Callable] = None
 ) -> Iterator[GenerationState]:
     """Generates sequences of tokens.
 
@@ -56,12 +58,28 @@ def sequence_generator(
         one for each sequence in the batch.
     fsm_states
         The initial states of the finite-state machine for each sequence in the batch.
+    switch_experts
+        Function that indicates whether the experts used in the model should be switched
+        Accepts the unbiased logits, the allowed tokens and the probability distribution of the last gating network
+        as well as the expert combinations already tried.
 
     Yields
     ------
     A new sequence.
 
     """
+
+    def get_logits_biased(input_ids, kv_cache, fsms, fsm_states, experts_used=None):
+        try:
+            logits, kv_cache, router_logits, experts = model(input_ids, attention_masks, kv_cache, experts_used)
+        except IndexError:  # Exceeding the context length
+            raise ContextLengthExceededError(
+                "The input length exceeds the context length of the model."
+            )
+
+        allowed_tokens = get_allowed_tokens(fsms, fsm_states)
+        return logits, bias_logits(logits, allowed_tokens), kv_cache, router_logits, experts, allowed_tokens
+
     import torch
 
     if rng is None:
@@ -70,15 +88,27 @@ def sequence_generator(
     kv_cache = None
 
     while True:
-        try:
-            logits, kv_cache = model(token_ids, attention_masks, kv_cache)
-        except IndexError:  # Exceeding the context length
-            raise ContextLengthExceededError(
-                "The input length exceeds the context length of the model."
-            )
+        logits, biased_logits, kv_cache, router_logits, experts, allowed_tokens = get_logits_biased(token_ids, None, fsms,
+                                                                                    # todo: fix kv_cache
+                                                                                    fsm_states)
+        if switch_experts is not None:
+            last_layer_experts = experts[
+                -1]  # tensor of shape [sequence length (or 1 if past key values), experts_per_token]
+            experts_tried = [([None] * last_layer_experts.shape[0]).copy() for _ in
+                             range(len(experts))]  # list of shape hidden layers, sequence length
+            experts_tried[-1].pop()
+            experts_tried[-1].append([tuple(last_layer_experts[-1, :].tolist())])
+            prob_distr = torch.nn.functional.softmax(router_logits[-1], dim=-1)[-1, :]
+            while switch_experts(logits, allowed_tokens, prob_distr, experts_tried[-1][-1]):
+                # Clip kv cache and token ids for speed - not working! TODO: fix
+                # kv_cache = tuple([(key[..., 0:-1, :], val[..., 0:-1, :]) for key, val in kv_cache])
+                # token_ids = token_ids[..., 0:-1]
+                logits, biased_logits, kv_cache, router_logits, experts, allowed_tokens = get_logits_biased(token_ids,
+                                                                                            None, fsms, fsm_states,
+                                                                                            # todo: fix kv_cache
+                                                                                            experts_tried)
+                experts_tried[-1][-1].append(tuple(experts[-1][-1, :].tolist()))
 
-        allowed_tokens = get_allowed_tokens(fsms, fsm_states)
-        biased_logits = bias_logits(logits, allowed_tokens)
         next_token_ids, ancestors, sequence_weights = sampler(
             biased_logits, sequence_weights, rng
         )
@@ -113,7 +143,7 @@ def sequence_generator(
 
 
 def get_next_fsm_states(
-    fsms: List["Guide"], fsm_states: List[int], next_token_ids: "torch.Tensor"
+        fsms: List["Guide"], fsm_states: List[int], next_token_ids: "torch.Tensor"
 ) -> List[int]:
     """
 
@@ -136,7 +166,7 @@ def get_next_fsm_states(
 
 
 def get_allowed_tokens(
-    fsms: List["Guide"], fsm_states: List[int]
+        fsms: List["Guide"], fsm_states: List[int]
 ) -> List[Optional[Iterable[int]]]:
     """Get the new instructions for each sequence from the finite-state machine.
 
@@ -182,7 +212,7 @@ def is_generation_finished(fsms: List["Guide"], fsm_states: List[int]) -> bool:
 
 
 def update_token_ids(
-    token_ids: "torch.Tensor", next_token_ids: "torch.Tensor", ancestors: "torch.Tensor"
+        token_ids: "torch.Tensor", next_token_ids: "torch.Tensor", ancestors: "torch.Tensor"
 ) -> "torch.Tensor":
     """Append the sampled tokens to the running sequence of tokens.
 
@@ -209,7 +239,7 @@ def update_token_ids(
 
 
 def update_attention_masks(
-    attention_masks: "torch.Tensor", ancestors: "torch.Tensor"
+        attention_masks: "torch.Tensor", ancestors: "torch.Tensor"
 ) -> "torch.Tensor":
     """Expand the attention masks.
 
@@ -256,7 +286,7 @@ def reorder_fsm_states(fsm_states: List[int], ancestors: "torch.Tensor") -> List
 
 
 def reorder_kv_cache(
-    kv_cache: Optional[Tuple], ancestors: "torch.Tensor"
+        kv_cache: Optional[Tuple], ancestors: "torch.Tensor"
 ) -> Optional[Tuple]:
     """Re-order the KV-cache based on the ancestors.
 
