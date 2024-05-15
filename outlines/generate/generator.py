@@ -2,6 +2,7 @@ import dataclasses
 import math
 from typing import TYPE_CHECKING, Callable, Iterable, Iterator, List, Optional, Tuple
 import numpy as np
+from .switches import TooManyExpertsError
 
 if TYPE_CHECKING:
     import torch
@@ -99,16 +100,18 @@ def sequence_generator(
             experts_tried[-1].pop()
             experts_tried[-1].append([tuple(last_layer_experts[-1, :].tolist())])
             prob_distr = torch.nn.functional.softmax(router_logits[-1], dim=-1)[-1, :]
-            while switch_experts(logits, allowed_tokens, prob_distr, experts_tried[-1][-1]):
-                # Clip kv cache and token ids for speed - not working! TODO: fix
-                # kv_cache = tuple([(key[..., 0:-1, :], val[..., 0:-1, :]) for key, val in kv_cache])
-                # token_ids = token_ids[..., 0:-1]
-                logits, biased_logits, kv_cache, router_logits, experts, allowed_tokens = get_logits_biased(token_ids,
-                                                                                            None, fsms, fsm_states,
-                                                                                            # todo: fix kv_cache
-                                                                                            experts_tried)
-                experts_tried[-1][-1].append(tuple(experts[-1][-1, :].tolist()))
-
+            try:
+                while switch_experts(logits, allowed_tokens, prob_distr, experts_tried[-1][-1]):
+                    # Clip kv cache and token ids for speed - not working! TODO: fix
+                    # kv_cache = tuple([(key[..., 0:-1, :], val[..., 0:-1, :]) for key, val in kv_cache])
+                    # token_ids = token_ids[..., 0:-1]
+                    logits, biased_logits, kv_cache, router_logits, experts, allowed_tokens = get_logits_biased(token_ids,
+                                                                                                None, fsms, fsm_states,
+                                                                                                # todo: fix kv_cache
+                                                                                                experts_tried)
+                    experts_tried[-1][-1].append(tuple(experts[-1][-1, :].tolist()))
+            except TooManyExpertsError:
+                pass
         next_token_ids, ancestors, sequence_weights = sampler(
             biased_logits, sequence_weights, rng
         )
